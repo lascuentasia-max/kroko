@@ -1,0 +1,39 @@
+name: Compilar Kroko Pro para Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows-pro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Descargar Kroko ONNX
+        run: |
+          git clone --depth 1 https://github.com/kroko-ai/kroko-onnx.git
+
+      - name: Comprobar Docker
+        run: |
+          docker version
+          docker buildx version
+
+      - name: Compilar versión Pro para Windows
+        working-directory: kroko-onnx
+        run: |
+          chmod +x build_windows.sh
+          ./build_windows.sh --variant pro
+
+      - name: Generar hashes
+        working-directory: kroko-onnx
+        run: |
+          cd release_artifacts/windows
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Subir archivos compilados
+        uses: actions/upload-artifact@v7
+        with:
+          name: kroko-windows-pro
+          path: kroko-onnx/release_artifacts/windows/
+          retention-days: 7
+          if-no-files-found: error
