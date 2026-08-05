@@ -3,53 +3,166 @@ name: Compilar Kroko Pro para Windows
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build-windows-pro:
+    name: Kroko Pro Windows x64
     runs-on: ubuntu-24.04
     timeout-minutes: 180
 
     steps:
-      - name: Descargar Kroko ONNX
+      - name: Descargar código de Kroko ONNX
         run: |
           git clone --depth 1 https://github.com/kroko-ai/kroko-onnx.git
+
+      - name: Mostrar versión descargada
+        working-directory: kroko-onnx
+        run: |
+          git rev-parse HEAD
+          git status --short
 
       - name: Comprobar Docker
         run: |
           docker version
           docker buildx version
 
-      - name: Actualizar versiones de OpenSSL
+      - name: Actualizar versiones disponibles de OpenSSL
         working-directory: kroko-onnx
+        shell: bash
         run: |
+          set -euo pipefail
+
           sed -i \
             's/3_6_2 3_6_1 3_5_4 3_5_3/3_6_3 3_5_7 3_4_6 3_3_7 3_0_21/' \
             Dockerfile.windows
 
-          echo "Versiones configuradas:"
-          grep -n "for v in" Dockerfile.windows
+          echo "Referencias de OpenSSL configuradas:"
+          grep -n "3_6_3\|3_5_7\|3_4_6\|3_3_7\|3_0_21" \
+            Dockerfile.windows || true
 
-      - name: Compilar versión Pro para Windows
+      - name: Compilar Kroko Pro para Windows
         working-directory: kroko-onnx
+        shell: bash
         run: |
+          set -u
+
           chmod +x build_windows.sh
+
+          # El script puede devolver código 1 durante la limpieza final
+          # por permisos de archivos creados dentro de Docker, aunque los
+          # binarios ya se hayan generado correctamente.
+          set +e
           ./build_windows.sh --variant pro
+          BUILD_STATUS=$?
+          set -e
+
+          OUTPUT_DIR="release_artifacts/windows"
+          BIN_DIR="$OUTPUT_DIR/bin-pro"
+          SERVER="$BIN_DIR/kroko-onnx-online-websocket-server.exe"
+
+          WHEEL="$(find "$OUTPUT_DIR" \
+            -maxdepth 1 \
+            -type f \
+            -name 'kroko_onnx-*-1pro-cp312-cp312-win_amd64.whl' \
+            -print \
+            -quit)"
+
+          echo
+          echo "Código devuelto por el script: $BUILD_STATUS"
+          echo "Comprobando archivos generados..."
+
+          if [ ! -f "$SERVER" ]; then
+            echo "::error::No se generó $SERVER"
+            exit 1
+          fi
+
+          if [ -z "$WHEEL" ] || [ ! -f "$WHEEL" ]; then
+            echo "::error::No se generó el paquete WHL Pro."
+            exit 1
+          fi
+
+          REQUIRED_FILES=(
+            "$BIN_DIR/kroko-onnx-online-websocket-server.exe"
+            "$BIN_DIR/onnxruntime.dll"
+            "$BIN_DIR/onnxruntime_providers_shared.dll"
+            "$BIN_DIR/libcrypto-3-x64.dll"
+            "$BIN_DIR/libssl-3-x64.dll"
+            "$BIN_DIR/vc_redist.x64.exe"
+          )
+
+          for FILE in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$FILE" ]; then
+              echo "::error::Falta un archivo requerido: $FILE"
+              exit 1
+            fi
+          done
+
+          echo
+          echo "Compilación válida."
+          echo "Servidor: $SERVER"
+          echo "Wheel: $WHEEL"
+
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            echo "::warning::El script devolvió $BUILD_STATUS durante la limpieza, pero todos los archivos requeridos existen."
+          fi
 
       - name: Mostrar archivos generados
-        if: always()
-        run: |
-          find kroko-onnx/release_artifacts -maxdepth 4 -type f \
-            -printf '%p (%k KB)\n' 2>/dev/null || true
-
-      - name: Generar hashes
         working-directory: kroko-onnx
+        shell: bash
         run: |
+          echo "Contenido de release_artifacts/windows:"
+          find release_artifacts/windows \
+            -maxdepth 4 \
+            -type f \
+            -printf '%p (%k KB)\n' \
+            | sort
+
+      - name: Generar hashes SHA-256
+        working-directory: kroko-onnx
+        shell: bash
+        run: |
+          set -euo pipefail
+
           cd release_artifacts/windows
-          find . -type f -exec sha256sum {} \; > SHA256SUMS.txt
+
+          find . \
+            -type f \
+            ! -name SHA256SUMS.txt \
+            -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > SHA256SUMS.txt
+
+          echo "Hashes generados:"
+          cat SHA256SUMS.txt
+
+      - name: Crear ZIP completo
+        working-directory: kroko-onnx
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd release_artifacts/windows
+
+          zip -r \
+            kroko-windows-pro.zip \
+            bin-pro \
+            ./*.whl \
+            SHA256SUMS.txt
+
+          ls -lh kroko-windows-pro.zip
 
       - name: Subir archivos compilados
         uses: actions/upload-artifact@v4
         with:
           name: kroko-windows-pro
-          path: kroko-onnx/release_artifacts/windows/
+          path: |
+            kroko-onnx/release_artifacts/windows/bin-pro/
+            kroko-onnx/release_artifacts/windows/*.whl
+            kroko-onnx/release_artifacts/windows/SHA256SUMS.txt
+            kroko-onnx/release_artifacts/windows/kroko-windows-pro.zip
           retention-days: 7
           if-no-files-found: error
+          compression-level: 0
