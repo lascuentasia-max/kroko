@@ -18,20 +18,36 @@ jobs:
           docker version
           docker buildx version
 
+      - name: Actualizar versiones de OpenSSL
+        working-directory: kroko-onnx
+        run: |
+          sed -i \
+            's/3_6_2 3_6_1 3_5_4 3_5_3/3_6_3 3_5_7 3_4_6 3_3_7 3_0_21/' \
+            Dockerfile.windows
+
+          echo "Versiones configuradas:"
+          grep -n "for v in" Dockerfile.windows
+
       - name: Compilar versión Pro para Windows
         working-directory: kroko-onnx
         run: |
           chmod +x build_windows.sh
           ./build_windows.sh --variant pro
 
+      - name: Mostrar archivos generados
+        if: always()
+        run: |
+          find kroko-onnx/release_artifacts -maxdepth 4 -type f \
+            -printf '%p (%k KB)\n' 2>/dev/null || true
+
       - name: Generar hashes
         working-directory: kroko-onnx
         run: |
           cd release_artifacts/windows
-          sha256sum * > SHA256SUMS.txt
+          find . -type f -exec sha256sum {} \; > SHA256SUMS.txt
 
       - name: Subir archivos compilados
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: kroko-windows-pro
           path: kroko-onnx/release_artifacts/windows/
